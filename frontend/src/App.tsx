@@ -92,13 +92,20 @@ function App() {
   }
 
   const handleAddHook = async () => {
-    if (teachMode) {
-      await api('/teach/disable')
-      setTeachMode(false)
-    }
-    await api('/suction/off')
     const res = await api('/hooks/add')
-    if (res.success) log(`Hook ${res.index} added!`)
+    if (res.success) log(`Hook ${res.index + 1} added! Move to next position or RELEASE when done.`)
+  }
+
+  const handleTrainHook = async () => {
+    log('Training: Going to pick...')
+    await api('/pick/goto')
+    log('Training: Grabbing blade...')
+    await api('/suction/grab')
+    log('Training: Lifting to safe Z...')
+    await api('/safe-z/goto')
+    log('Training: FREE MOVE enabled - position over hook, then Add/Update')
+    await api('/teach/enable')
+    setTeachMode(true)
   }
 
   const handleStartCycle = async () => {
@@ -310,6 +317,33 @@ function App() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {/* Hooks */}
           <Card title="③ Hook Drop Points" icon={<MapPin className="w-4 h-4" />} className="md:col-span-2">
+            <div className="flex items-center gap-2 mb-2">
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={handleTrainHook}
+                disabled={!connected || !pick || safeZ === 0}
+              >
+                <Crosshair className="w-4 h-4 mr-1" /> Train Hook
+              </Button>
+              {teachMode && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={async () => {
+                    await api('/suction/off')
+                    await api('/teach/disable')
+                    setTeachMode(false)
+                    log('Training done - blade released')
+                  }}
+                >
+                  Done
+                </Button>
+              )}
+              <span className="text-xs text-slate-500">
+                {teachMode ? 'Position over hook → Add → repeat → Done' : 'Auto picks blade & enables FREE MOVE'}
+              </span>
+            </div>
             <div className="flex gap-4">
               <div className="flex-1 bg-slate-800 rounded-lg p-2 max-h-48 overflow-y-auto">
                 {hooks.length === 0 ? (
@@ -327,7 +361,7 @@ function App() {
                             : "hover:bg-slate-700"
                         )}
                       >
-                        Hook {i}: X:{h.x.toFixed(0)} Y:{h.y.toFixed(0)} Z:{h.z.toFixed(0)}
+                        Hook {i + 1}: X:{h.x.toFixed(0)} Y:{h.y.toFixed(0)} Z:{h.z.toFixed(0)}
                       </div>
                     ))}
                   </div>
@@ -336,6 +370,19 @@ function App() {
               <div className="flex flex-col gap-2 w-28">
                 <Button size="sm" onClick={handleAddHook} disabled={!connected}>
                   <Plus className="w-4 h-4 mr-1" /> Add
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={async () => {
+                    if (selectedHook !== null) {
+                      await api(`/hooks/${selectedHook}`, 'PUT', position)
+                      log(`Updated hook ${selectedHook + 1}`)
+                    }
+                  }}
+                  disabled={!connected || selectedHook === null}
+                >
+                  Update
                 </Button>
                 <Button
                   size="sm"

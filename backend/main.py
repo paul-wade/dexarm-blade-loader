@@ -217,6 +217,22 @@ def delete_hook(index: int):
     return {"success": True, "hooks": controller.positions['hooks']}
 
 
+class PositionRequest(BaseModel):
+    x: float
+    y: float
+    z: float
+
+
+@app.put("/api/hooks/{index}")
+def update_hook(index: int, pos: PositionRequest):
+    """Update a hook position"""
+    if index < 0 or index >= len(controller.positions['hooks']):
+        return {"success": False, "message": "Invalid hook index"}
+    controller.positions['hooks'][index] = {'x': pos.x, 'y': pos.y, 'z': pos.z}
+    controller.save_positions()
+    return {"success": True, "hooks": controller.positions['hooks']}
+
+
 @app.delete("/api/hooks")
 def clear_hooks():
     """Clear all hooks"""
