@@ -1,6 +1,10 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useApi } from './hooks/useApi'
 import { cn } from './lib/utils'
+import { 
+  speak, setSpeechEnabled, isSpeechEnabled,
+  startMotionAlarm, stopMotionAlarm, setAlarmEnabled, isAlarmEnabled 
+} from './lib/speech'
 import {
   Home,
   Plug,
@@ -23,6 +27,10 @@ import {
   Grip,
   Wind,
   PowerOff,
+  Volume2,
+  VolumeX,
+  Bell,
+  BellOff,
 } from 'lucide-react'
 
 function App() {
@@ -31,30 +39,66 @@ function App() {
   const [jogDistance, setJogDistance] = useState(10)
   const [selectedHook, setSelectedHook] = useState<number | null>(null)
   const [teachMode, setTeachMode] = useState(false)
+  const [speechOn, setSpeechOn] = useState(isSpeechEnabled())
+  const [alarmOn, setAlarmOn] = useState(isAlarmEnabled())
+  const jogBusy = useRef(false)  // Prevent rapid jog commands
+
+  const toggleSpeech = () => {
+    const newValue = !speechOn
+    setSpeechOn(newValue)
+    setSpeechEnabled(newValue)
+    if (newValue) speak('Voice enabled')
+  }
+
+  const toggleAlarm = () => {
+    const newValue = !alarmOn
+    setAlarmOn(newValue)
+    setAlarmEnabled(newValue)
+  }
 
   const connected = status?.connected ?? false
+  const homed = status?.homed ?? false
   const position = status?.position ?? { x: 0, y: 0, z: 0 }
+  const carryingBlade = status?.carrying_blade ?? false
   const pick = status?.positions?.pick
   const safeZ = status?.positions?.safe_z ?? 0
   const hooks = status?.positions?.hooks ?? []
   const isRunning = status?.is_running ?? false
   const isPaused = status?.is_paused ?? false
+  const currentCycle = status?.current_cycle ?? 0
+  const totalCycles = status?.total_cycles ?? 0
+
+  // Motion alarm - beeps when robot is running
+  useEffect(() => {
+    if (isRunning && alarmOn) {
+      startMotionAlarm()
+    } else {
+      stopMotionAlarm()
+    }
+    return () => stopMotionAlarm()
+  }, [isRunning, alarmOn])
 
   const handleConnect = async () => {
     if (connected) {
       await api('/disconnect')
       log('Disconnected')
+      speak('Disconnected')
     } else {
       if (!selectedPort) return
       const res = await api('/connect', 'POST', { port: selectedPort })
-      if (res.success) log('Connected! Press HOME to initialize')
+      if (res.success) {
+        log('Connected! Press HOME to initialize')
+        speak('Connected. Press home to initialize.')
+      }
     }
   }
 
   const handleHome = async () => {
     log('Homing...')
+    speak('Homing')
     await api('/home')
     log('At HOME')
+    speak('Home position reached')
   }
 
   const handleTeachMode = async () => {
@@ -70,7 +114,15 @@ function App() {
   }
 
   const handleJog = async (axis: string, direction: number) => {
-    await api('/jog', 'POST', { axis, distance: jogDistance * direction })
+    // Debounce: skip if previous jog still in progress
+    if (jogBusy.current) return
+    jogBusy.current = true
+    try {
+      await api('/jog', 'POST', { axis, distance: jogDistance * direction })
+    } finally {
+      // Small delay before allowing next jog
+      setTimeout(() => { jogBusy.current = false }, 100)
+    }
   }
 
   const handleSetPick = async () => {
@@ -78,7 +130,7 @@ function App() {
       await api('/teach/disable')
       setTeachMode(false)
     }
-    await api('/pick/set')
+    await api('/pick/set_current')
     log('Pick location set!')
   }
 
@@ -87,30 +139,47 @@ function App() {
       await api('/teach/disable')
       setTeachMode(false)
     }
-    await api('/safe-z/set')
+    await api('/safe-z/set_current')
     log('Safe Z set!')
   }
 
   const handleAddHook = async () => {
-    const res = await api('/hooks/add')
-    if (res.success) log(`Hook ${res.index + 1} added! Move to next position or RELEASE when done.`)
+    // Use current position (from teach mode)
+    const res = await api('/hooks/add_current')
+    if (res.success) {
+      log(`Hook ${res.index + 1} added! Move to next position or click Done.`)
+      speak(`Hook ${res.index + 1} added`)
+    }
   }
 
   const handleTrainHook = async () => {
-    log('Training: Going to pick...')
+    log('Training: Going to pick position...')
+    speak('Moving to pick position')
     await api('/pick/goto')
-    log('Training: Grabbing blade...')
-    await api('/suction/grab')
+    
+    log('Training: Grabbing blade (suction ON)...')
+    speak('Grabbing blade')
+    await api('/suction/on')
+    
+    // Small delay to let vacuum build
+    await new Promise(r => setTimeout(r, 300))
+    
     log('Training: Lifting to safe Z...')
+    speak('Lifting')
     await api('/safe-z/goto')
-    log('Training: FREE MOVE enabled - position over hook, then Add/Update')
+    
+    log('Training: FREE MOVE - position arm over hook, then click Add')
+    speak('Free move. Position over hook. Then add.')
     await api('/teach/enable')
     setTeachMode(true)
+    
+    // Suction stays ON - blade is held while you position
   }
 
   const handleStartCycle = async () => {
     log('Starting cycle...')
-    await api('/cycle/start')
+    speak('Starting cycle')
+    await api('/cycle/run')
   }
 
   return (
@@ -132,6 +201,26 @@ function App() {
             DexArm Blade Loader
           </h1>
           <div className="flex items-center gap-4">
+            <button
+              onClick={toggleSpeech}
+              className={cn(
+                "p-2 rounded-lg transition-colors",
+                speechOn ? "bg-blue-500/20 text-blue-400" : "bg-slate-700 text-slate-500"
+              )}
+              title={speechOn ? "Voice on" : "Voice off"}
+            >
+              {speechOn ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+            </button>
+            <button
+              onClick={toggleAlarm}
+              className={cn(
+                "p-2 rounded-lg transition-colors",
+                alarmOn ? "bg-yellow-500/20 text-yellow-400" : "bg-slate-700 text-slate-500"
+              )}
+              title={alarmOn ? "Motion alarm on" : "Motion alarm off"}
+            >
+              {alarmOn ? <Bell className="w-4 h-4" /> : <BellOff className="w-4 h-4" />}
+            </button>
             <div className="flex items-center gap-2">
               <div className={cn(
                 "w-2 h-2 rounded-full",
@@ -145,7 +234,7 @@ function App() {
                 connected ? "bg-green-500 animate-pulse" : "bg-red-500"
               )} />
               <span className="text-sm text-slate-400">
-                {connected ? 'Connected' : 'Disconnected'}
+                {connected ? (homed ? 'Ready' : 'Connected') : 'Disconnected'}
               </span>
             </div>
           </div>
@@ -274,10 +363,10 @@ function App() {
           {/* Suction */}
           <Card title="Suction" icon={<Wind className="w-4 h-4" />}>
             <div className="flex gap-2">
-              <Button onClick={() => api('/suction/grab')} disabled={!connected} className="flex-1">
-                <Grip className="w-4 h-4 mr-2" /> GRAB
+              <Button onClick={() => api('/suction/on')} disabled={!connected} className="flex-1">
+                <Grip className="w-4 h-4 mr-2" /> {carryingBlade ? '●' : ''} ON
               </Button>
-              <Button onClick={() => api('/suction/release')} disabled={!connected} className="flex-1">
+              <Button onClick={() => api('/suction/blow')} disabled={!connected} className="flex-1">
                 <Wind className="w-4 h-4 mr-2" /> RELEASE
               </Button>
               <Button onClick={() => api('/suction/off')} disabled={!connected} variant="ghost">
@@ -335,6 +424,7 @@ function App() {
                     await api('/teach/disable')
                     setTeachMode(false)
                     log('Training done - blade released')
+                    speak('Training complete. Blade released.')
                   }}
                 >
                   Done
@@ -422,10 +512,13 @@ function App() {
           <Card title="Run Cycle" icon={<Play className="w-4 h-4" />}>
             <div className="space-y-4">
               {/* Progress */}
+              <div className="text-xs text-center text-slate-400 mb-1">
+                {isRunning ? `${currentCycle} / ${totalCycles}` : totalCycles > 0 ? 'Ready' : 'Set positions'}
+              </div>
               <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
                 <div
                   className="h-full bg-gradient-to-r from-blue-500 to-cyan-400 transition-all duration-300"
-                  style={{ width: isRunning ? '50%' : '0%' }}
+                  style={{ width: totalCycles > 0 ? `${(currentCycle / totalCycles) * 100}%` : '0%' }}
                 />
               </div>
               {/* Controls */}

@@ -6,18 +6,19 @@ const MAX_RETRIES = 3
 
 interface Status {
   connected: boolean
+  homed: boolean
   position: { x: number; y: number; z: number }
+  carrying_blade: boolean
+  suction_active: boolean
+  safe_z: number
   is_running: boolean
   is_paused: boolean
+  current_cycle: number
+  total_cycles: number
   positions: {
     pick: { x: number; y: number; z: number } | null
-    safe_z: number
+    safe_z: number | null
     hooks: Array<{ x: number; y: number; z: number }>
-  }
-  settings: {
-    suction_grab_delay: number
-    suction_release_delay: number
-    feedrate: number
   }
 }
 
