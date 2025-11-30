@@ -152,7 +152,7 @@ class MotionPlanner:
         return commands
 
     def plan_place_sequence(
-        self, current: Position, place_pos: Position, release_delay_ms: int = 100
+        self, current: Position, place_pos: Position, release_delay_ms: int = 500
     ) -> CommandSequence:
         """
         Plan a complete place sequence.
@@ -160,10 +160,11 @@ class MotionPlanner:
         Steps:
         1. Safe move to above place position
         2. Lower to place position
-        3. Release suction
-        4. Wait for release
-        5. Turn off pump
-        6. Lift to safe Z
+        3. Release suction (blow)
+        4. Wait for blade to release
+        5. Release pressure (neutral)
+        6. Turn off pump
+        7. Lift to safe Z
         """
         self._validate_position(place_pos)
         
@@ -180,8 +181,12 @@ class MotionPlanner:
         # Blow air to release blade (M1001)
         commands.append(SuctionCommand("blow"))
         
-        # Wait for blade to release
+        # Wait for blade to release - needs time for air to push blade off
         commands.append(DelayCommand(milliseconds=release_delay_ms))
+        
+        # Release to neutral pressure (M1002) before stopping
+        commands.append(SuctionCommand("release"))
+        commands.append(DelayCommand(milliseconds=100))
         
         # Stop pump
         commands.append(SuctionCommand("off"))
