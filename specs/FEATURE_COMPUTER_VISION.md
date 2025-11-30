@@ -14,84 +14,233 @@ This is a future enhancement requiring additional hardware and significant devel
 - Mounting bracket (above workspace)
 - Consistent lighting
 
-## Potential Use Cases
+## Practical Use Cases
 
-### 1. Auto-Detect Stack Positions
+Given physical constraints (thin blades, opaque container sides), focus on **top-down detection**:
 
-```
-Camera sees blade stacks → OpenCV finds contours → 
-Calculate centroid → Convert pixel to XYZ → 
-Auto-populate stack positions
-```
-
-**Benefit**: Zero manual teaching for stacks
-
-### 2. Count Blades in Stack
+### 1. Stack Empty vs Has Blades (Top-Down)
 
 ```
-Camera captures side view → Measure stack height →
-Divide by blade thickness → Estimate count
+Camera above stack → See shiny blade surface vs dark container bottom
+├─ Blade visible = stack has blades
+└─ Dark/black = stack empty → ALERT USER
 ```
 
-**Benefit**: Accurate count without manual entry
+**Detection**: Simple brightness threshold on stack region
+**Benefit**: Know when to refill before cycle fails
 
-### 3. Verify Hook Occupancy
-
-```
-Camera sees hook rail → Detect blade shapes →
-Mark hooks as occupied/empty
-```
-
-**Benefit**: Skip occupied hooks, detect failures
-
-### 4. Placement Verification
+### 2. Hook Occupied vs Empty
 
 ```
-After place → Camera checks hook →
-Blade present? Aligned correctly? →
-Log result, retry if failed
+Camera sees hook rail from above/angle →
+├─ Hook has blade = rectangular bright shape
+└─ Hook empty = just the hook (thin line or nothing)
 ```
 
-**Benefit**: Quality control, error recovery
+**Detection**: Look for blade-sized bright rectangle at each hook position
+**Benefit**: 
+- Skip already-occupied hooks
+- Verify placement succeeded
+- Detect dropped blades
 
-## Technical Approach
+### 3. Placement Verification (After Each Place)
 
-### Camera Calibration
+```
+Place blade on hook → Wait 500ms → Capture image →
+├─ Blade detected at hook = SUCCESS
+└─ No blade detected = FAILED (retry or alert)
+```
+
+**Benefit**: Catch failures immediately, not at end of cycle
+
+### 4. Cycle Pre-Check
+
+```
+Before starting cycle:
+├─ Check all target hooks are empty
+├─ Check stack has blades  
+└─ If issues → Alert user before wasting time
+```
+
+## What We CAN'T Easily Detect
+
+- **Exact blade count** (too thin to see stack height)
+- **Blade orientation** (need rotary module feedback instead)
+- **Blade quality/defects** (maybe GPT-4V could help here)
+
+## Technical Approaches
+
+### Option 1: Classical CV (OpenCV)
+
+**Best for**: High contrast scenarios (shiny blade on dark background)
 
 ```python
-# Convert pixel coordinates to arm coordinates
-class CameraCalibration:
+def detect_blades_opencv(frame) -> List[BladeBoundingBox]:
+    # Shiny metal on dark background = high contrast
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    
+    # Threshold - bright metal vs dark container
+    _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+    
+    # Find contours
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # Filter by aspect ratio (blades are rectangular)
+    blades = [c for c in contours if is_blade_shape(c)]
+    return blades
+
+def is_blade_shape(contour) -> bool:
+    """Check if contour matches blade dimensions."""
+    rect = cv2.minAreaRect(contour)
+    w, h = rect[1]
+    aspect = max(w,h) / min(w,h) if min(w,h) > 0 else 0
+    return 2.5 < aspect < 4.0  # Blade aspect ratio
+```
+
+**Pros**: Fast, no API costs, works offline
+**Cons**: Sensitive to lighting, needs tuning
+
+### Option 2: OpenAI Vision API (GPT-4V)
+
+**Best for**: Complex scenes, natural language queries, no training needed
+
+```python
+import openai
+import base64
+
+def analyze_workspace_gpt4v(image_path: str, query: str) -> dict:
+    """Use GPT-4V to analyze workspace image."""
+    with open(image_path, "rb") as f:
+        image_b64 = base64.b64encode(f.read()).decode()
+    
+    response = openai.chat.completions.create(
+        model="gpt-4-vision-preview",
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": query},
+                {"type": "image_url", "image_url": {
+                    "url": f"data:image/jpeg;base64,{image_b64}"
+                }}
+            ]
+        }],
+        max_tokens=500
+    )
+    return response.choices[0].message.content
+
+# Example queries:
+# "How many blades are in the stack on the left?"
+# "Is hook #3 occupied? Describe what you see."
+# "Are all blades aligned correctly on the hooks?"
+# "Estimate the XY position of the blade stack center"
+```
+
+**Pros**: 
+- Zero training - works out of the box
+- Natural language queries
+- Can describe anomalies ("blade is crooked")
+- Handles varied lighting
+
+**Cons**:
+- API cost (~$0.01-0.03 per image)
+- Latency (1-3 seconds)
+- Requires internet
+- Position estimates less precise than CV
+
+### Option 3: Custom Trained Model (YOLO/etc)
+
+**Best for**: Production, high accuracy, offline
+
+```python
+# Training workflow:
+# 1. Capture 50-100 images of workspace
+# 2. Label with tool like LabelImg or Roboflow
+# 3. Train YOLO model
+# 4. Deploy locally
+
+from ultralytics import YOLO
+
+model = YOLO("blade_detector.pt")  # Your trained model
+
+def detect_blades_yolo(frame):
+    results = model(frame)
+    return results[0].boxes  # Bounding boxes with confidence
+```
+
+**Training the model:**
+1. **Capture images** - Various lighting, stack heights, angles
+2. **Label them** - Draw boxes around blades, hooks, etc.
+3. **Use Roboflow** - Free tier, handles labeling + training
+4. **Export model** - Download .pt file for local inference
+
+### Option 4: Hybrid Approach (Recommended)
+
+```python
+class HybridVision:
     def __init__(self):
-        # Calibration matrix from 4+ known points
+        self.opencv = OpenCVDetector()
+        self.gpt4v = GPT4VAnalyzer()
+    
+    def quick_count(self, frame) -> int:
+        """Fast local count with OpenCV."""
+        return len(self.opencv.detect_blades(frame))
+    
+    def verify_placement(self, frame, hook_index: int) -> dict:
+        """Use GPT-4V for verification and troubleshooting."""
+        return self.gpt4v.analyze(frame, 
+            f"Is hook #{hook_index} correctly loaded? Is the blade aligned?")
+    
+    def diagnose_problem(self, frame) -> str:
+        """Natural language diagnosis when something goes wrong."""
+        return self.gpt4v.analyze(frame,
+            "Describe any problems you see with the blade placement.")
+```
+
+## Why Dark Background Helps
+
+```
+┌─────────────────────────────────────┐
+│  SHINY BLADE ON BLACK CONTAINER    │
+├─────────────────────────────────────┤
+│                                     │
+│   ████████████  ← Blade reflects   │
+│   ████████████    light (bright)   │
+│   ████████████                     │
+│   ▓▓▓▓▓▓▓▓▓▓▓▓  ← Dark container  │
+│   ▓▓▓▓▓▓▓▓▓▓▓▓    (low values)    │
+│                                     │
+│   Simple threshold separates them!  │
+└─────────────────────────────────────┘
+```
+
+The black container you mentioned is perfect - high contrast = easy detection.
+
+## Camera Calibration
+
+```python
+class CameraCalibration:
+    """Convert pixel coordinates to arm XYZ."""
+    
+    def __init__(self):
         self.transform_matrix = None
     
     def calibrate(self, pixel_points: List, arm_points: List):
-        """Compute transformation from pixel to arm coords."""
-        # Use cv2.getPerspectiveTransform or similar
-        pass
+        """
+        Calibrate using 4+ known points.
+        Move arm to known positions, mark pixel locations.
+        """
+        # pixel_points: [(px1,py1), (px2,py2), ...]
+        # arm_points: [(x1,y1), (x2,y2), ...]
+        self.transform_matrix = cv2.getPerspectiveTransform(
+            np.float32(pixel_points),
+            np.float32(arm_points)
+        )
     
-    def pixel_to_arm(self, px: int, py: int) -> Position:
-        """Convert pixel coordinate to arm XYZ."""
-        pass
-```
-
-### Blade Detection
-
-```python
-def detect_blades(frame) -> List[BladeBoundingBox]:
-    # Convert to grayscale
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    
-    # Threshold or edge detection
-    edges = cv2.Canny(gray, 50, 150)
-    
-    # Find contours
-    contours, _ = cv2.findContours(edges, ...)
-    
-    # Filter by size/shape (rectangular, correct aspect ratio)
-    blades = [c for c in contours if is_blade_shape(c)]
-    
-    return blades
+    def pixel_to_arm(self, px: int, py: int) -> Tuple[float, float]:
+        """Convert pixel to arm XY coordinates."""
+        point = np.float32([[px, py]])
+        transformed = cv2.perspectiveTransform(point, self.transform_matrix)
+        return transformed[0][0], transformed[0][1]
 ```
 
 ### Integration Architecture
