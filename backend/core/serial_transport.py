@@ -1,10 +1,13 @@
 """
 Serial Transport - Single responsibility: serial communication
+
+Thread-safe: Uses lock to prevent concurrent access from multiple API requests.
 """
 
 import serial
 import serial.tools.list_ports
 import time
+import threading
 from typing import Optional, Protocol
 from dataclasses import dataclass
 from .logger import log_serial, log_critical, log_ok
@@ -34,12 +37,18 @@ class SerialConfig:
 
 
 class SerialTransport:
-    """Handles raw serial communication with the arm"""
+    """
+    Handles raw serial communication with the arm.
+    
+    Thread-safe: All send/read operations are protected by a lock.
+    This prevents corruption when multiple API requests hit simultaneously.
+    """
     
     def __init__(self, config: Optional[SerialConfig] = None):
         self.config = config or SerialConfig()
         self._serial: Optional[serial.Serial] = None
         self._connected = False
+        self._lock = threading.Lock()  # Prevent concurrent serial access
     
     @staticmethod
     def list_ports() -> list[str]:
@@ -70,18 +79,40 @@ class SerialTransport:
         self._connected = False
     
     def send(self, data: str, wait_ok: bool = True) -> Optional[str]:
-        """Send data and optionally wait for 'ok' response"""
+        """
+        Send data and optionally wait for 'ok' response.
+        
+        Thread-safe: Acquires lock before sending to prevent interleaved commands.
+        """
         if not self._serial or not self._connected:
             raise ConnectionError("Not connected")
         
-        log_serial(">>>", data)
-        self._serial.write(f"{data}\r".encode())
+        with self._lock:  # CRITICAL: Serialize all serial access
+            log_serial(">>>", data)
+            self._serial.write(f"{data}\r".encode())
+            
+            if not wait_ok:
+                self._serial.reset_input_buffer()
+                return None
+            
+            return self._wait_for_ok()
+    
+    def send_emergency(self, data: str) -> None:
+        """
+        Send emergency command WITHOUT waiting for lock.
         
-        if not wait_ok:
-            self._serial.reset_input_buffer()
-            return None
+        USE ONLY FOR EMERGENCY STOP (M410).
+        This will interrupt any in-progress command.
+        """
+        if not self._serial or not self._connected:
+            return
         
-        return self._wait_for_ok()
+        log_serial("!!! EMERGENCY", data)
+        try:
+            self._serial.write(f"{data}\r".encode())
+            self._serial.reset_input_buffer()  # Clear any pending responses
+        except:
+            pass  # Best effort - don't raise on emergency
     
     def _wait_for_ok(self, timeout: float = 10.0) -> str:
         """

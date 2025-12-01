@@ -217,6 +217,39 @@ class BladeLoaderController:
         self._queue.execute_all(self._transport)
         self._suction_active = False
     
+    def emergency_stop(self) -> None:
+        """
+        Emergency stop - halt all motion immediately.
+        
+        Sends M410 (quickstop) which halts motors but allows resume.
+        Also turns off pump for safety.
+        
+        BYPASSES SERIAL LOCK - will interrupt any in-progress command.
+        """
+        log_critical("EMERGENCY STOP")
+        
+        # Clear any pending commands
+        self._queue.clear()
+        
+        # Send quickstop via emergency channel (bypasses lock!)
+        if hasattr(self._transport, 'send_emergency'):
+            self._transport.send_emergency("M410")   # Quickstop
+            self._transport.send_emergency("M1002")  # Release pressure
+            self._transport.send_emergency("M1003")  # Stop pump
+        else:
+            # Fallback for mock transport
+            try:
+                self._transport.send("M410", wait_ok=False)
+                self._transport.send("M1002", wait_ok=False)
+                self._transport.send("M1003", wait_ok=False)
+            except:
+                pass
+        
+        self._suction_active = False
+        self._carrying_blade = False  # Assume blade dropped
+        self._is_homed = False  # Must re-home after emergency stop
+        log_warn("Motion halted - pump off - MUST RE-HOME before resuming")
+    
     # =========================================================================
     # Motor Control
     # =========================================================================

@@ -147,6 +147,10 @@ def run_full_cycle(state: AppState = Depends(get_app_state)):
             log_cycle(f"Cycle {i+1}/{hook_count}: PLACING at hook {i} X={hook.x:.1f} Y={hook.y:.1f} Z={hook.z:.1f}")
             ctrl.place_blade(hook)
         
+        # Home at end of cycle
+        log_cycle("Cycle complete - returning home")
+        ctrl.home()
+        
         log_ok(f"Cycle complete: {hook_count} blades placed")
         return {
             "success": True,
@@ -185,18 +189,21 @@ def pause_cycle(state: AppState = Depends(get_app_state)):
 
 @router.post("/stop")
 def stop_cycle(state: AppState = Depends(get_app_state)):
-    """Stop running cycle and turn off pump."""
+    """
+    Emergency stop - halt cycle immediately.
+    
+    Sends M410 quickstop to halt motion, turns off pump.
+    """
     state.is_running = False
     state.is_paused = False
     
-    # SAFETY: Turn off pump when stopping
     if state.controller:
         try:
-            state.controller.suction_off()
-        except:
-            pass
+            state.controller.emergency_stop()
+        except Exception as e:
+            log_critical(f"Stop error: {e}")
     
-    return {"success": True}
+    return {"success": True, "message": "Emergency stop sent"}
 
 
 @router.get("/state")
